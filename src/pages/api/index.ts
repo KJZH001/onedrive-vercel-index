@@ -28,52 +28,74 @@ export function encodePath(path: string): string {
   return `:${encodeURIComponent(encodedPath)}`
 }
 
+// 提前多少秒认为 access_token 即将过期并主动刷新（避免边界期请求失败）
+const ACCESS_TOKEN_REFRESH_BUFFER_SECONDS = 300
+
 /**
  * Fetch the access token from Redis storage and check if the token requires a renew
  *
  * @returns Access token for OneDrive API
  */
 export async function getAccessToken(): Promise<string> {
-  const { accessToken, refreshToken } = await getOdAuthTokens()
+  const { accessToken, refreshToken, accessTokenExpiryAt } = await getOdAuthTokens()
 
-  // Return in storage access token if it is still valid
-  if (typeof accessToken === 'string') {
+  const now = Math.floor(Date.now() / 1000)
+  const isStoredTokenStillValid =
+    typeof accessToken === 'string' &&
+    accessTokenExpiryAt != null &&
+    now < accessTokenExpiryAt - ACCESS_TOKEN_REFRESH_BUFFER_SECONDS
+
+  // 若存储的 access_token 存在且未过期（或未到“即将过期”），直接返回
+  if (isStoredTokenStillValid) {
     console.log('Fetch access token from storage.')
     return accessToken
   }
 
-  // Return empty string if no refresh token is stored, which requires the application to be re-authenticated
+  // 没有有效的 refresh_token 时无法刷新，需重新走 OAuth
   if (typeof refreshToken !== 'string') {
     console.log('No refresh token, return empty access token.')
     return ''
   }
 
-  // Fetch new access token with in storage refresh token
+  // 使用 refresh_token 向 Microsoft 换取新的 access_token（并可能得到新的 refresh_token）
   const body = new URLSearchParams()
   body.append('client_id', apiConfig.clientId)
   body.append('redirect_uri', apiConfig.redirectUri)
   body.append('client_secret', clientSecret)
   body.append('refresh_token', refreshToken)
   body.append('grant_type', 'refresh_token')
-
-  const resp = await axios.post(apiConfig.authApi, body, {
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-  })
-
-  if ('access_token' in resp.data && 'refresh_token' in resp.data) {
-    const { expires_in, access_token, refresh_token } = resp.data
-    await storeOdAuthTokens({
-      accessToken: access_token,
-      accessTokenExpiry: parseInt(expires_in),
-      refreshToken: refresh_token,
-    })
-    console.log('Fetch new access token with stored refresh token.')
-    return access_token
+  if (apiConfig.scope) {
+    body.append('scope', apiConfig.scope)
   }
 
-  return ''
+  try {
+    const resp = await axios.post(apiConfig.authApi, body, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+    })
+
+    const data = resp.data
+    if (!data || typeof data.access_token !== 'string') {
+      console.error('Token refresh response missing access_token:', data ? 'invalid shape' : 'empty')
+      return ''
+    }
+
+    const expires_in = typeof data.expires_in === 'number' ? data.expires_in : parseInt(data.expires_in, 10)
+    const newRefreshToken = typeof data.refresh_token === 'string' ? data.refresh_token : refreshToken
+
+    await storeOdAuthTokens({
+      accessToken: data.access_token,
+      accessTokenExpiry: Number.isNaN(expires_in) ? 3600 : expires_in,
+      refreshToken: newRefreshToken,
+    })
+    console.log('Fetch new access token with stored refresh token.')
+    return data.access_token
+  } catch (err: any) {
+    const msg = err?.response?.data ?? err?.message ?? err
+    console.error('Token refresh failed:', typeof msg === 'object' ? JSON.stringify(msg) : msg)
+    return ''
+  }
 }
 
 /**
