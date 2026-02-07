@@ -12,9 +12,22 @@ export function obfuscateToken(token: string): string {
   return encrypted.toString()
 }
 export function revealObfuscatedToken(obfuscated: string): string {
-  // Decrypt SHA256 obfuscated token
+  // Decrypt AES obfuscated token
   const decrypted = CryptoJS.AES.decrypt(obfuscated, AES_SECRET_KEY)
   return decrypted.toString(CryptoJS.enc.Utf8)
+}
+
+/**
+ * 获取实际用于 OAuth 的 client_secret。
+ * 优先级：环境变量 OD_CLIENT_SECRET > 解密 obfuscatedClientSecret > 将配置值当作明文（兼容直接填明文的情况）。
+ */
+export function getClientSecret(): string {
+  const fromEnv = process.env.OD_CLIENT_SECRET
+  if (fromEnv && fromEnv.trim().length > 0) return fromEnv.trim()
+  const obfuscated = apiConfig.obfuscatedClientSecret ?? ''
+  const revealed = revealObfuscatedToken(obfuscated)
+  if (revealed && revealed.length > 0) return revealed
+  return obfuscated
 }
 
 // Generate the Microsoft OAuth 2.0 authorization URL, used for requesting the authorisation code
@@ -56,7 +69,7 @@ export async function requestTokenWithAuthCode(
   | { error: string; errorDescription: string; errorUri: string }
 > {
   const { clientId, redirectUri, authApi } = apiConfig
-  const clientSecret = revealObfuscatedToken(apiConfig.obfuscatedClientSecret)
+  const clientSecret = getClientSecret()
 
   // Construct URL parameters for OAuth2
   const params = new URLSearchParams()

@@ -5,13 +5,12 @@ import axios from 'axios'
 
 import apiConfig from '../../../config/api.config'
 import siteConfig from '../../../config/site.config'
-import { revealObfuscatedToken } from '../../utils/oAuthHandler'
+import { getClientSecret, revealObfuscatedToken } from '../../utils/oAuthHandler'
 import { compareHashedToken } from '../../utils/protectedRouteHandler'
 import { getOdAuthTokens, storeOdAuthTokens } from '../../utils/odAuthTokenStore'
 import { runCorsMiddleware } from './raw'
 
 const basePath = pathPosix.resolve('/', siteConfig.baseDirectory)
-const clientSecret = revealObfuscatedToken(apiConfig.obfuscatedClientSecret)
 
 /**
  * Encode the path of the file relative to the base directory
@@ -54,6 +53,12 @@ export async function getAccessToken(): Promise<string> {
   // 没有有效的 refresh_token 时无法刷新，需重新走 OAuth
   if (typeof refreshToken !== 'string') {
     console.log('No refresh token, return empty access token.')
+    return ''
+  }
+
+  const clientSecret = getClientSecret()
+  if (!clientSecret || clientSecret.length === 0) {
+    console.error('Token refresh skipped: client_secret is not configured (set OD_CLIENT_SECRET or obfuscatedClientSecret in config).')
     return ''
   }
 
